@@ -66,6 +66,29 @@ def test_digest_auth_with_401():
         flow.send(response)
 
 
+def test_digest_auth_preserves_quoted_parameter_whitespace():
+    auth = httpx.DigestAuth(username="user", password="pass")
+    request = httpx.Request("GET", "https://www.example.com")
+    flow = auth.sync_auth_flow(request)
+    next(flow)
+
+    response = httpx.Response(
+        401,
+        headers={
+            "WWW-Authenticate": (
+                'Digest Realm = " A Realm ", Nonce = " Mixed Case ", '
+                'Opaque = " Keep Spaces "'
+            )
+        },
+        request=request,
+    )
+    request = flow.send(response)
+
+    assert 'realm=" A Realm "' in request.headers["Authorization"]
+    assert 'nonce=" Mixed Case "' in request.headers["Authorization"]
+    assert 'opaque=" Keep Spaces "' in request.headers["Authorization"]
+
+
 def test_digest_auth_with_401_nonce_counting():
     auth = httpx.DigestAuth(username="user", password="pass")
     request = httpx.Request("GET", "https://www.example.com")
@@ -248,7 +271,20 @@ def test_digest_auth_rfc_7616_md5(monkeypatch):
         flow.send(response)
 
 
-def test_digest_auth_rfc_7616_sha_256(monkeypatch):
+@pytest.mark.parametrize(
+    "uppercase_parameters",
+    [
+        (),
+        ("realm",),
+        ("nonce",),
+        ("algorithm",),
+        ("qop",),
+        ("opaque",),
+        ("realm", "nonce", "algorithm", "qop", "opaque"),
+    ],
+)
+@pytest.mark.parametrize("separator", ["=", " = ", "\t=\t"])
+def test_digest_auth_rfc_7616_sha_256(monkeypatch, uppercase_parameters, separator):
     # Example from https://datatracker.ietf.org/doc/html/rfc7616#section-3.9.1
 
     def mock_get_client_nonce(nonce_count: int, nonce: bytes) -> bytes:
@@ -274,6 +310,11 @@ def test_digest_auth_rfc_7616_sha_256(monkeypatch):
             'opaque="FQhe/qaU925kfnzjCev0ciny7QMkPqMAFRtzCUYo5tdS"'
         )
     }
+    for parameter in ("realm", "nonce", "algorithm", "qop", "opaque"):
+        name = parameter.upper() if parameter in uppercase_parameters else parameter
+        headers["WWW-Authenticate"] = headers["WWW-Authenticate"].replace(
+            f"{parameter}=", f"{name}{separator}"
+        )
     response = httpx.Response(
         content=b"Auth required", status_code=401, headers=headers, request=request
     )
